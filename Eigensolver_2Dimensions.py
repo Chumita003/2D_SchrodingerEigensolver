@@ -147,8 +147,16 @@ def Schrodinger_solver_2D(
     # Hamiltonian
     H = T + V
 
-    # Solve for the lowest eigenpairs
-    eigvals, eigvecs = eigsh(H, k=num_eigvals, which='SA')
+    # Solve for the lowest eigenpairs.
+    # Shift-invert: target eigenvalues near sigma instead of running plain Lanczos on
+    # the full spectrum. This matters more here than in 1D, since Ntot grows as N^2 and
+    # plain 'SA' mode gets noticeably slower as the grid grows. sigma must sit safely
+    # below every possible eigenvalue: since H = T + V with T >= 0 (the discretized
+    # kinetic energy is positive semi-definite), E_0 >= min(V) always, so any
+    # sigma < min(V) is guaranteed safe, and "closest to sigma" becomes exactly
+    # "the k smallest".
+    sigma = float(V_values.min()) - 1.0
+    eigvals, eigvecs = eigsh(H, k=num_eigvals, sigma=sigma, which='LM')
 
     idx = np.argsort(eigvals)
     eigvals = eigvals[idx]
