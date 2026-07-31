@@ -21,19 +21,52 @@ import numpy as np
 from functools import partial
 
 from Eigensolver_2Dimensions import Schrodinger_solver_2D, V_HarmonicOscillator_2D
+from Eigensolver_2Dimensions import (
+    V_FiniteSquareWell_2D_NonSeparable,
+    V_FiniteSquareWell_2D_Separable,
+)
 from validate_2d import (
     validate_infinite_square_well_2d,
     validate_harmonic_oscillator_2d,
+    validate_finite_square_well_2d_separable,
     convergence_study_isw_2d,
     delta_well_2d_divergence_study,
 )
 
 
+def test_separable_finite_well_is_separable_and_the_other_one_is_not():
+    # Guards the distinction the two potentials exist to make. In the corner region
+    # (|x| > Lx/2 AND |y| > Ly/2) the rectangular well is V0, while a genuine Vx(x)+Vy(y)
+    # sum is 2*V0. That is exactly why only the separable one may be compared against
+    # E_{nx,ny} = eps_nx + eps_ny.
+    Lx = Ly = 4.0
+    V0 = 40.0
+    X, Y = np.meshgrid([0.0, 3.0], [0.0, 3.0], indexing='ij')  # (0,0) inside, (3,3) corner
+
+    V_ns = V_FiniteSquareWell_2D_NonSeparable(X, Y, Lx=Lx, Ly=Ly, V0=V0, centered=True)
+    V_s = V_FiniteSquareWell_2D_Separable(X, Y, Lx=Lx, Ly=Ly, V0=V0)
+
+    assert V_ns[0, 0] == 0.0 and V_s[0, 0] == 0.0        # both vanish inside
+    assert V_ns[1, 1] == V0                              # rectangular well: V0 in the corner
+    assert V_s[1, 1] == 2 * V0                           # separable sum: 2*V0 there
+    assert V_ns[0, 1] == V0 and V_s[0, 1] == V0          # and they agree on the edge strips
+
+
+def test_separable_finite_well_2d_matches_sum_of_1d_levels():
+    # Quantitative benchmark that only exists because the potential separates. Measured
+    # ~1.8e-2, capped by pointwise sampling of the step in V (first order) at the coarse
+    # dx=0.1 a 2D grid can afford - not by the stencil. See the docstring in validate_2d.
+    # Loose threshold on purpose; this pins the structure of the spectrum, not precision.
+    _, _, _, err = validate_finite_square_well_2d_separable(N=160)
+    assert np.all(err < 5e-2)
+
+
 def test_infinite_square_well_2d_matches_analytic():
-    # Measured ~3.5e-3 at N=90, flat across levels (boundary-stencil limitation, see
-    # README). Generous margin.
+    # Measured ~2e-8 to 2e-7 at N=90. Before the odd-extension boundary closure this sat
+    # at ~3.5e-3, flat across levels, so the threshold here is deliberately tight: it is
+    # the regression guard for that closure.
     _, _, _, err = validate_infinite_square_well_2d(N=90)
-    assert np.all(err < 6e-3)
+    assert np.all(err < 1e-5)
 
 
 def test_harmonic_oscillator_2d_matches_analytic():
@@ -43,14 +76,15 @@ def test_harmonic_oscillator_2d_matches_analytic():
     assert np.all(err < 5e-4)
 
 
-def test_isw_2d_convergence_is_first_order():
-    # The 5-point stencil is 4th order in the interior, but the boundary rows cap global
-    # convergence at O(1/N), not O(1/N^4) - same mechanism as the 1D code, verified here
-    # by fitting the measured slope. Loose bounds since this is only 4 points.
+def test_isw_2d_convergence_is_fourth_order():
+    # The 5-point stencil is 4th order in the interior, and with the odd-extension closure
+    # on the boundary rows that order now survives globally along both x and y. Measured
+    # local slopes: 4.11, 4.08, 4.05, 4.04. Before the closure they sat at ~1.0, which is
+    # what this test used to assert.
     Ns, errs = convergence_study_isw_2d()
-    slopes = np.log(errs[1:] / errs[:-1]) / np.log(Ns[1:] / Ns[:-1])
-    assert np.all(slopes < -0.8)
-    assert np.all(slopes > -1.3)
+    slopes = -np.log(errs[1:] / errs[:-1]) / np.log(Ns[1:] / Ns[:-1])
+    assert np.all(slopes > 3.5)
+    assert np.all(slopes < 4.6)
 
 
 def test_delta_well_2d_does_not_converge():

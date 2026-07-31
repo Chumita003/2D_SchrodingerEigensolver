@@ -17,24 +17,34 @@ def d2dx2_matrix(N, dx):
     '''
 
     '''
-    Known limitation, carried over unchanged from the 1D stencil: the two rows adjacent
-    to each Dirichlet boundary are missing a term of the 5-point stencil that reaches one
-    point past x_min/x_max (or y_min/y_max). One-sided 4th-order formulas exist for those
-    rows, but using them would make this matrix asymmetric, and since the 2D Laplacian is
-    built as kron(Iy, Dxx) + kron(Dyy, Ix), any asymmetry in Dxx or Dyy propagates
-    directly into the full Hamiltonian, breaking H = H^dagger. So the uniform central
-    stencil is kept on purpose, exactly as in the 1D code, to guarantee a Hermitian H.
+    Boundary treatment (odd/antisymmetric extension), carried over from the 1D code.
 
-    The cost, verified numerically here (not assumed from the 1D result): for the 2D
-    infinite square well, sweeping N over 30, 45, 65, 90 (interior grid, same in x and y)
-    gives ground-state relative error 1.07e-2, 7.06e-3, 4.85e-3, 3.48e-3, with a measured
-    local convergence slope of about -1.02 to -1.03 in log-log(error) vs log(N) - i.e.
-    global O(1/N), not O(1/N^4), same signature as the 1D case, now showing up along both
-    boundary pairs at once. The harmonic oscillator is essentially unaffected (its
-    eigenfunctions decay to ~0 well before the domain edge), converging close to O(dx^4)
-    instead: about 5e-5 to 1.7e-4 relative error at N=90 for an anisotropic oscillator,
-    three orders of magnitude tighter than the square well at the same N. See
-    validate_2d.py and the README for the full tables.
+    The row for the first interior point needs psi_{-1}, one point *outside* the domain.
+    It is not the boundary itself (which is legitimately 0 by Dirichlet) and it is not
+    zero. Since psi'' = (2m/hbar^2)(V - E) psi and psi = 0 on the boundary, psi'' also
+    vanishes there, so psi is odd about the boundary and psi_{-1} = -psi_1. That turns
+    the -psi_{-1} term into +psi_1, i.e. it adds +1/(12 dx^2) to the diagonal entry of
+    the first and last rows (-30 -> -29 in units of 1/(12 dx^2)).
+
+    Crucially the correction is diagonal-only, so this matrix stays exactly symmetric.
+    That matters more in 2D than in 1D: the Laplacian is built as
+    kron(Iy, Dxx) + kron(Dyy, Ix), so any asymmetry in Dxx or Dyy would propagate straight
+    into H and break H = H^dagger. The one-sided 4th-order rows do have that problem;
+    this closure does not.
+
+    Measured effect (2D infinite square well, Lx = 4, Ly = 6, worst relative error over
+    the four lowest levels): 2.6e-3 -> 3.5e-7 at N = 120 per axis, and 1.3e-3 -> 2.2e-8 at
+    N = 240, i.e. the O(1/N) signature along both boundary pairs is gone and the expected
+    high-order convergence is restored. The harmonic oscillator is unchanged to machine
+    precision, as before. See validate_2d.py and the README for the full tables.
+
+    Residual limitations, both unrelated to the boundary rows:
+      - the odd extension is exact only if V'(boundary) = 0, since the 4th derivative
+        reduces to d4psi/dx4 = (4m/hbar^2) V'(x_0) psi'(x_0) there - the first even
+        derivative that need not vanish. Otherwise a local O(dx^2) error survives in
+        those rows.
+      - potentials with an interior jump (V_FiniteSquareWell_2D_NonSeparable and friends)
+        are still limited to ~O(dx) by pointwise sampling of the step onto the mesh.
     '''
 
     if N < 5:
@@ -46,11 +56,18 @@ def d2dx2_matrix(N, dx):
     coeffs = np.array([-1.0, 16.0, -30.0, 16.0, -1.0]) / (12.0 * dx**2)
     offsets = np.array([-2, -1, 0, 1, 2])
 
+    # Odd-extension closure at the two Dirichlet boundaries: psi_{-1} = -psi_1 turns the
+    # -psi_{-1} term into +psi_1, i.e. -30 -> -29 in units of 1/(12 dx^2). Diagonal-only,
+    # so this matrix stays symmetric and the Kronecker-sum Laplacian stays Hermitian.
+    main = coeffs[2] * np.ones(N)
+    main[0] += 1.0 / (12.0 * dx**2)
+    main[-1] += 1.0 / (12.0 * dx**2)
+
     d2_matrix = diags(
         diagonals=[
             coeffs[0] * np.ones(N - 2),
             coeffs[1] * np.ones(N - 1),
-            coeffs[2] * np.ones(N),
+            main,
             coeffs[3] * np.ones(N - 1),
             coeffs[4] * np.ones(N - 2),
         ],
@@ -187,12 +204,52 @@ def V_AnharmonicOscillator_2D(X, Y, a=1.0, b=0.05):
 def V_InfiniteSquareWell_2D(X, Y):
     return np.zeros_like(X, dtype=float)
 
-def V_FiniteSquareWell_2D(X, Y, Lx=4.0, Ly=4.0, V0=50.0, centered=True):
+def V_FiniteSquareWell_2D_NonSeparable(X, Y, Lx=4.0, Ly=4.0, V0=50.0, centered=True):
+    '''
+    Rectangular finite well: V = 0 inside the rectangle, V0 everywhere outside.
+
+    This potential is NOT separable, i.e. it cannot be written as Vx(x) + Vy(y). Check the
+    corner region, |x| > Lx/2 AND |y| > Ly/2: this V returns V0 there, while
+    Vx(x) + Vy(y) would return 2*V0. So the spectrum does NOT factorize and it is wrong to
+    compare it against E_{nx,ny} = eps_nx + eps_ny. It is a legitimate physical potential
+    and a fine qualitative test - just not an analytic benchmark.
+
+    Use V_FiniteSquareWell_2D_Separable below when you want a quantitative benchmark.
+    '''
     if centered:
         inside = (np.abs(X) <= 0.5 * Lx) & (np.abs(Y) <= 0.5 * Ly)
     else:
         inside = (X >= 0.0) & (X <= Lx) & (Y >= 0.0) & (Y <= Ly)
     return np.where(inside, 0.0, V0)
+
+
+# Backwards-compatible alias: the old name pointed at the non-separable version.
+V_FiniteSquareWell_2D = V_FiniteSquareWell_2D_NonSeparable
+
+
+def V_FiniteSquareWell_1D_Profile(u, L=4.0, V0=40.0):
+    '''1D finite-well profile, 0 for |u| <= L/2 and V0 outside. Helper for the separable 2D well.'''
+    return np.where(np.abs(u) <= 0.5 * L, 0.0, V0)
+
+
+def V_FiniteSquareWell_2D_Separable(X, Y, Lx=4.0, Ly=4.0, V0=40.0):
+    '''
+    Separable finite well by construction: V(x,y) = Vx(x) + Vy(y), each factor a 1D finite
+    well of depth V0. Note this is 2*V0 in the corners, not V0 - that is exactly the price
+    of separability, and it is what makes the spectrum factorize:
+
+        E_{nx,ny} = eps_nx(Lx, V0) + eps_ny(Ly, V0)
+
+    with eps_n the 1D finite-well bound states (roots of k tan(kL/2) = kappa for even
+    states and k cot(kL/2) = -kappa for odd ones). For Lx = 4, V0 = 40 the 1D ground state
+    is eps_1 = 0.276598377, so the 2D ground state of this potential is 2 * 0.276598377.
+
+    Accuracy caveat: like every step potential here, the pointwise sampling of the
+    discontinuity onto the mesh limits convergence to ~O(dx), independently of the
+    boundary stencil. Expect ~1e-3 to 1e-4 relative error, not 1e-8.
+    '''
+    return (V_FiniteSquareWell_1D_Profile(X, L=Lx, V0=V0)
+            + V_FiniteSquareWell_1D_Profile(Y, L=Ly, V0=V0))
 
 def V_LinearPotential_2D(X, Y, Fx=1.0, Fy=0.0):
     return Fx * X + Fy * Y
@@ -312,8 +369,7 @@ def plot_eigenfunction_grid(
     ):
     '''
     Mosaic of heatmaps for the first n_states eigenfunctions, one panel per state. This
-    is the 2D analogue of stacking psi_n(x) curves in the 1D code: since a single 2D
-    wavefunction already fills a 2D plot on its own, the natural way to show several
+    is the 2D analogue of stacking psi_n(x) curves in the 1D code: show several
     states side by side is a grid of small heatmaps rather than overlaying them.
 
     x, y, eigvecs: outputs of Schrodinger_solver_2D.
@@ -468,17 +524,27 @@ x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     num_eigvals=8
 )
 
---------------------------- 4) Finite Square Well --------------------------
+--------------------------- 4) Finite Square Well (Non-Separable) -------------------------
 # Rectangular well: V=0 inside, V=V0 outside.
 x, y, eigvals, eigvecs = Schrodinger_solver_2D(
-    V_pot=partial(V_FiniteSquareWell_2D, Lx=4.0, Ly=4.0, V0=40.0, centered=True),
+    V_pot=partial(V_FiniteSquareWell_2D_NonSeparable, Lx=4.0, Ly=4.0, V0=40.0, centered=True),
     x_min=-8.0, x_max=8.0,
     y_min=-8.0, y_max=8.0,
     Nx=180, Ny=180,
     num_eigvals=8
 )
 
------------------------------ 5) Linear Potential --------------------------
+--------------------------- 5) Finite Square Well (Separable) -------------------------
+# Rectangular well: V=0 inside, V=V0 outside.
+x, y, eigvals, eigvecs = Schrodinger_solver_2D(
+    V_pot=partial(V_FiniteSquareWell_2D_Separable, Lx=4.0, Ly=4.0, V0=40.0),
+    x_min=-8.0, x_max=8.0,
+    y_min=-8.0, y_max=8.0,
+    Nx=180, Ny=180,
+    num_eigvals=8
+)
+
+----------------------------- 6) Linear Potential --------------------------
 # V(x,y) = Fx*x + Fy*y
 x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     V_pot=partial(V_LinearPotential_2D, Fx=1.0, Fy=0.0),
@@ -488,7 +554,7 @@ x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     num_eigvals=8
 )
 
------------------------------ 6) Soft Coulomb ------------------------------
+----------------------------- 7) Soft Coulomb ------------------------------
 # V(x,y) = -Z/sqrt(x^2+y^2+eps^2)
 # Smaller eps => deeper and sharper singularity regularization.
 x, y, eigvals, eigvecs = Schrodinger_solver_2D(
@@ -499,7 +565,7 @@ x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     num_eigvals=8
 )
 
---------------------------- 7) Quartic Single Well -------------------------
+--------------------------- 8) Quartic Single Well -------------------------
 # V(x,y) = ax*x^4 + ay*y^4
 x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     V_pot=partial(V_SingleWell_2D, ax=1.0, ay=1.0),
@@ -509,7 +575,7 @@ x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     num_eigvals=8
 )
 
-# ---------------------------- 8) Discrete Delta Well ----------------------
+# ---------------------------- 9) Discrete Delta Well ----------------------
 # V(x,y) = -alpha*delta(x-x0)delta(y-y0)
 # Implemented as one attractive grid site with strength -alpha/(dx*dy)
 x, y, eigvals, eigvecs = Schrodinger_solver_2D(
@@ -520,7 +586,7 @@ x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     num_eigvals=6
 )
 
---------------------------- 9) Quartic Double Well -------------------------
+--------------------------- 10) Quartic Double Well -------------------------
 # V(x,y) = Vx*(x^2-a^2)^2 + Vy*y^2
 x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     V_pot=partial(V_DoubleWell_2D, a=1.5, Vx=1.0, Vy=0.3),
@@ -541,11 +607,11 @@ if __name__ == '__main__':
     # states). See the README for the numerical evidence. Using a slightly anisotropic
     # oscillator here sidesteps that issue entirely for this quick demo.
     x, y, eigvals, eigvecs = Schrodinger_solver_2D(
-        V_pot=partial(V_HarmonicOscillator_2D, omega_x=1.0, omega_y=1.7, m=1.0),
-        x_min=-8.0, x_max=8.0,
-        y_min=-8.0, y_max=8.0,
-        Nx=220, Ny=220,
-        num_eigvals=6,
+        V_pot=partial(V_HarmonicOscillator_2D, omega_x=1.0, omega_y=1.0, m=1.0),
+        x_min=-6.0, x_max=6.0,
+        y_min=-6.0, y_max=6.0,
+        Nx=180, Ny=180,
+        num_eigvals=8
     )
 
     print("Lowest energies:")
@@ -556,10 +622,10 @@ if __name__ == '__main__':
     # ground state, and the energy-level diagram.
     plot_eigenfunction_grid(
         x, y, eigvecs, n_states=6, ncols=3,
-        suptitle="Anisotropic 2D harmonic oscillator: eigenfunctions",
+        suptitle="2D Harmonic Oscillator: eigenfunctions",
     )
     plot_eigenfunction_surface(
         x, y, eigvecs, n=0, title="Ground state, psi_0(x,y)",
     )
-    plot_energy_levels_2d(eigvals, n_states=6, title="Anisotropic 2D harmonic oscillator: energy levels")
+    plot_energy_levels_2d(eigvals, n_states=6, title="2D Harmonic Oscillator: energy levels")
     plt.show()

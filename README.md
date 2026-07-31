@@ -2,7 +2,7 @@
 
 This is the two-dimensional extension of my [1D Schrodinger eigensolver](https://github.com/Chumita003/1D_SchrodingerEigensolver): same finite-difference philosophy, now for $H = -\tfrac{\hbar^2}{2m}(\partial_x^2+\partial_y^2) + V(x,y)$. I discretize x and y on a grid, build the kinetic energy operator by reusing the exact same 5-point 1D stencil along each axis and combining them into a 2D Laplacian with a Kronecker sum, add the potential as a diagonal matrix, and diagonalize the resulting sparse Hamiltonian with `scipy.sparse.linalg.eigsh` to get the lowest energies and wavefunctions. I did not assume the 2D code inherits the 1D solver's behavior just because it reuses its stencil. I went through it from scratch and checked the things that could plausibly be different in two dimensions, some carried over exactly as expected, one turned out to be a genuinely different and more severe problem than anything in the 1D project.
 
-`Eigensolver_2Dimensions.py` has the solver (`Schrodinger_solver_2D`), 9 potentials mirroring the 1D set, and plotting functions for heatmaps, a 3D surface, and an energy-level diagram. `validate_2d.py` runs the checks against analytic solutions. `demo_figures.py` regenerates the gallery figures below. `Eigensolver_2Dimensions.ipynb` is the working notebook. `Eigensolver_2Dimensions.pdf` is my handwritten derivation of the 2D stencil and the separable analytic spectra.
+`Eigensolver_2Dimensions.py` has the solver (`Schrodinger_solver_2D`), 10 potentials mirroring the 1D set (the finite square well now comes in separable and non-separable variants, see below), and plotting functions for heatmaps, a 3D surface, and an energy-level diagram. `validate_2d.py` runs the checks against analytic solutions. `demo_figures.py` regenerates the gallery figures below. `Eigensolver_2Dimensions.ipynb` is the working notebook. `Eigensolver_2Dimensions.pdf` is my handwritten derivation of the 2D stencil and the separable analytic spectra.
 
 ## Anisotropic harmonic oscillator
 
@@ -35,25 +35,47 @@ I checked two potentials with closed-form spectra: a rectangular infinite well (
 ```
 Infinite square well, Lx=12, Ly=8         Harmonic osc., wx=1, wy=1.7
  n     numeric     analytic   rel.err      n     numeric     analytic   rel.err
- 0   0.11176380  0.11137574  3.484e-03     0   1.34993665  1.35000000  4.693e-05
- 1   0.21492984  0.21418412  3.482e-03     1   2.34987222  2.35000000  5.437e-05
- 2   0.34388740  0.34269460  3.481e-03     2   3.04962285  3.05000000  1.237e-04
- 3   0.38687121  0.38553142  3.475e-03     3   3.34967973  3.35000000  9.560e-05
- 4   0.44705344  0.44550298  3.480e-03     4   4.04955842  4.05000000  1.090e-04
- 5   0.61899480  0.61685028  3.477e-03     5   4.34927537  4.35000000  1.666e-04
+ 0   0.11137574  0.11137574  1.725e-08     0   1.34993665  1.35000000  4.692e-05
+ 1   0.21418408  0.21418412  1.828e-07     1   2.34987222  2.35000000  5.437e-05
+ 2   0.34269451  0.34269460  2.500e-07     2   3.04962285  3.05000000  1.237e-04
+ 3   0.38553099  0.38553142  1.120e-06     3   3.34967973  3.35000000  9.560e-05
+ 4   0.44550285  0.44550298  2.759e-07     4   4.04955842  4.05000000  1.090e-04
+ 5   0.61684976  0.61685028  8.359e-07     5   4.34927537  4.35000000  1.666e-04
 ```
 
-Same story as the 1D project: the oscillator sits three orders of magnitude tighter than the square well, and the square well's error is flat across every level rather than growing with $n$. That flatness is the boundary-stencil limitation again, now in two dimensions.
+The square well used to sit at a flat $3.5\times10^{-3}$ across every level, three orders of magnitude *worse* than the oscillator, which is the opposite of what you'd expect given that the well is the simpler problem. That inversion was the boundary-stencil defect, now acting along both x and y at once. It's fixed, and the story is worth keeping.
 
-## The boundary accuracy limit, carried over from 1D
+## The boundary rows: same defect as 1D, same fix
 
-The 5-point stencil is fourth order in the interior, but the two rows adjacent to each Dirichlet boundary need a point one step past the edge of the domain that doesn't exist. Using the correct one-sided formula there would break the symmetry of the Hamiltonian matrix, so, exactly as in the 1D project, I kept the uniform central stencil everywhere and accepted that those boundary rows drop to second order locally. I didn't assume this carries over unchanged to 2D just because it's the same stencil, I checked it: I swept the grid resolution for the (now isotropic, $L=10$) square well's ground state and measured the convergence order directly.
+The 5-point stencil is fourth order in the interior, but the two rows adjacent to each Dirichlet boundary need a point one step past the edge of the domain that doesn't exist. Dropping that term is what capped the whole solver at $O(1/N)$. My original workaround was to accept the cap, because the obvious alternative, one-sided fourth-order formulas on those rows, destroys the symmetry of the matrix. That matters even more here than in 1D: the Laplacian is assembled as `kron(Iy, Dxx) + kron(Dyy, Ix)`, so any asymmetry in `Dxx` or `Dyy` propagates straight into $H$ and breaks $H=H^\dagger$ globally.
+
+The actual fix (derived in the [1D README](https://github.com/Chumita003/1D_SchrodingerEigensolver), so just the result here) closes the stencil with the odd extension $\psi_{-1}=-\psi_1$, which follows from $\psi''=\frac{2m}{\hbar^2}(V-E)\psi$ plus $\psi=0$ on the boundary. It amounts to adding $+1/(12 dx^2)$ to the first and last diagonal entries, and because it's diagonal-only, `Dxx` and `Dyy` stay symmetric and the Kronecker sum stays Hermitian. Exactly the property the one-sided rows couldn't give.
+
+I didn't assume this carries over to 2D just because it's the same stencil, I re-measured it: sweeping the grid resolution for the (isotropic, $L=10$) square well's ground state,
 
 ![2D infinite square well convergence](figures/convergence_isw2d.png)
 
-The measured points track $O(1/N)$, not $O(1/N^4)$, with a fitted local slope between $-1.03$ and $-1.02$ across the whole sweep (it eases slightly toward $-1.0$ as $N$ grows, exactly what you'd expect as the $1/N$ term starts to dominate more cleanly). Same signature as the 1D result, and the mechanism is identical: it's not a new 2D bug, it's the same truncated boundary rows, just now happening independently along x and along y. The oscillator barely notices, for the same reason it doesn't in 1D: its wavefunctions have decayed to essentially zero long before reaching the domain edge.
+```
+N=   30   rel. error=1.529e-06
+N=   45   rel. error=2.886e-07   local slope p=4.11
+N=   65   rel. error=6.450e-08   local slope p=4.08
+N=   90   rel. error=1.725e-08   local slope p=4.05
+N=  120   rel. error=5.397e-09   local slope p=4.04
+```
 
-## Two things that are genuinely new in 2D
+Before the fix the same sweep gave $1.07\times10^{-2}$, $7.06\times10^{-3}$, $4.85\times10^{-3}$, $3.48\times10^{-3}$ with a slope of about $1.0$. So the $O(1/N)$ signature along both boundary pairs is gone and the design order of the stencil survives globally. The oscillator is unchanged either way, for the same reason as in 1D: its wavefunctions have decayed to essentially zero long before reaching the domain edge, so there was never much for the defect to act on.
+
+## Three things that are genuinely new in 2D
+
+A rectangular finite well is not a separable potential, and that quietly breaks the obvious benchmark. The natural way to write it is
+
+$$V(x,y) = \begin{cases} 0, & |x|\le L_x/2 \text{ and } |y|\le L_y/2 \\ V_0, & \text{otherwise} \end{cases}$$
+
+and the natural way to check it is against $E_{n_x,n_y} = \epsilon_{n_x} + \epsilon_{n_y}$, with $\epsilon_n$ the 1D finite-well levels. That check is wrong, and the reason is easy to miss: look at the corner region, $|x|>L_x/2$ **and** $|y|>L_y/2$. The potential above gives $V_0$ there. A genuine sum $V_x(x)+V_y(y)$ gives $2V_0$. They agree everywhere except the four corners, and that's enough to destroy separability, so the spectrum doesn't factorize and the sum formula has no reason to hold.
+
+So there are now two functions instead of one. `V_FiniteSquareWell_2D_NonSeparable` is the physical rectangular well, kept because it's a perfectly legitimate potential and a good qualitative test, just not an analytic benchmark. `V_FiniteSquareWell_2D_Separable` is built explicitly as $V_x(x)+V_y(y)$, accepting $2V_0$ in the corners as the price of separability, and *that* one can be compared against $\epsilon_{n_x}+\epsilon_{n_y}$. For $L_x=4$, $V_0=40$ the 1D ground state is $\epsilon_1 = 0.276598377$.
+
+The measured agreement is about $1.8\times10^{-2}$, uniform across all four levels. That sounds bad until you notice it's exactly what first-order convergence predicts: the 1D finite-well check in the other repo reaches $8\times10^{-4}$, but at $dx=0.008$, whereas $N=160$ per axis in 2D means $dx=0.1$, and $8\times10^{-4}\times(0.1/0.008)\approx10^{-2}$. The uniformity across levels is the giveaway that it's a systematic potential-sampling bias, not a stencil problem, and the boundary fix above leaves it completely unchanged. Same root cause as in 1D: the jump in $V$ is sampled pointwise onto the mesh. Cell-averaged sampling would fix it; not implemented.
 
 Degenerate eigenvalues and Krylov methods don't mix well. I originally set up the harmonic oscillator demo with $\omega_x=\omega_y$, the more natural isotropic case, and the eigenvectors came out wrong: for the $n=1,2$ pair, which should be the separable states $(1,0)$ and $(0,1)$, `eigh` instead returned something close to their symmetric and antisymmetric combinations. That's not a bug, it's mathematically unavoidable. `eigsh` (and Lanczos/Arnoldi methods in general) build their whole approximation from repeatedly applying $H$ to a single starting vector. If $H$ has an eigenvalue with multiplicity 2, every power of $H$ applied to that vector, restricted to that 2D eigenspace, stays proportional to the same one direction, the projection of the starting vector onto the eigenspace. No amount of iterating recovers the second, orthogonal direction from a single starting vector. I confirmed this isn't just a quirk of my own `eigh` cross-check by writing a small matrix-free Lanczos solver from scratch (not part of this repo, just a sandbox check) and running it on the same isotropic potential: it silently returned only one eigenvalue per degenerate pair and substituted a higher, non-degenerate one in its place instead of flagging anything. `eigsh` is a more sophisticated implementation of the same underlying method (implicitly restarted Lanczos), so it inherits the same limitation in principle. This is why every validated result and every demo figure in this README uses anisotropic frequencies or a non-square well: it sidesteps the question entirely instead of hoping floating-point noise happens to save it.
 
@@ -69,11 +91,11 @@ N       E0
 90    -7.424
 ```
 
-This isn't a discretization artifact I need a finer grid to fix. The continuum 2D Dirac delta potential is a well known pathological case in quantum mechanics: unlike 1D, where the delta well has a clean, regularization-free formula, the 2D delta has no natural bound-state energy scale on its own, the problem needs an explicit regularization (a cutoff or a renormalized coupling) to have a well-defined answer at all, and the energy runs logarithmically with that cutoff. (The 3D delta potential has its own, differently-structured version of this same problem, it isn't "clean" either, so the honest contrast is with 1D specifically, not with 1D and 3D together.) Here the grid spacing $dx$ is playing the role of that cutoff, so refining the grid doesn't converge toward a hidden true value, it just changes the effective regularization: I checked this directly by fitting the measured $E_0$ against $1/dx^2$, and $E_0 \cdot dx^2$ comes out to $-0.375$ at every single grid resolution I tried (N=30 to N=90, a factor of 3 in $dx$), confirming the divergence is a clean $E_0 \propto -1/dx^2$ law, not noise. That law itself makes sense dimensionally: the discrete delta's depth is $V_0=\alpha/dx^2$, proportional to the grid's own natural kinetic-energy scale $\hbar^2/(m\,dx^2)$ with a fixed, $dx$-independent ratio (since I hold $\alpha$ fixed), so the bound-state energy has no choice but to scale the same way. I kept `V_DeltaDiscrete_2D` in the code because it's still a legitimate, well-defined discrete Hamiltonian for any fixed $N$, and because running into this by actually checking the numbers, instead of assuming the 1D result would just carry over, is a more honest outcome than pretending it isn't there.
+This isn't a discretization artifact I need a finer grid to fix. The continuum 2D Dirac delta potential is a well known pathological case in quantum mechanics: unlike 1D, where the delta well has a clean, regularization-free formula, the 2D delta has no natural bound-state energy scale on its own, the problem needs an explicit regularization (a cutoff or a renormalized coupling) to have a well-defined answer at all, and the energy runs logarithmically with that cutoff. (The 3D delta potential has its own, differently-structured version of this same problem, it isn't "clean" either, so the honest contrast is with 1D specifically, not with 1D and 3D together.) Here the grid spacing $dx$ is playing the role of that cutoff, so refining the grid doesn't converge toward a hidden true value, it just changes the effective regularization: I checked this directly by fitting the measured $E_0$ against $1/dx^2$, and $E_0 \cdot dx^2$ comes out to $-0.375$ at every single grid resolution I tried (N=30 to N=90, a factor of 3 in $dx$), confirming the divergence is a clean $E_0 \propto -1/dx^2$ law, not noise. That law itself makes sense dimensionally: the discrete delta's depth is $V_0=\alpha/dx^2$, proportional to the grid's own natural kinetic-energy scale $\hbar^2/(m dx^2)$ with a fixed, $dx$-independent ratio (since I hold $\alpha$ fixed), so the bound-state energy has no choice but to scale the same way. I kept `V_DeltaDiscrete_2D` in the code because it's still a legitimate, well-defined discrete Hamiltonian for any fixed $N$, and because running into this by actually checking the numbers, instead of assuming the 1D result would just carry over, is a more honest outcome than pretending it isn't there.
 
 ## What's in the repo
 
-`Eigensolver_2Dimensions.py` has `Schrodinger_solver_2D`, the 9 potentials, and the plotting functions (`plot_eigenfunction_heatmap`, `plot_eigenfunction_grid`, `plot_eigenfunction_surface`, `plot_energy_levels_2d`). `validate_2d.py` runs the analytic comparisons, the convergence sweep, and the delta-well divergence study. `demo_figures.py` regenerates the five gallery figures. `tests/test_eigensolver.py` pins down all of the above as regression tests, including the delta well's divergence direction, so a future change that accidentally "fixes" it gets flagged instead of quietly accepted. `Eigensolver_2Dimensions.ipynb` is the demo notebook. `Eigensolver_2Dimensions.pdf` is my handwritten derivation of the 2D stencil, the Kronecker-sum construction, and the separable analytic spectra.
+`Eigensolver_2Dimensions.py` has `Schrodinger_solver_2D`, the 10 potentials, and the plotting functions (`plot_eigenfunction_heatmap`, `plot_eigenfunction_grid`, `plot_eigenfunction_surface`, `plot_energy_levels_2d`). `validate_2d.py` runs the analytic comparisons, the convergence sweep, and the delta-well divergence study. `demo_figures.py` regenerates the five gallery figures. `tests/test_eigensolver.py` pins down all of the above as regression tests, including the delta well's divergence direction, so a future change that accidentally "fixes" it gets flagged instead of quietly accepted. `Eigensolver_2Dimensions.ipynb` is the demo notebook. `Eigensolver_2Dimensions.pdf` is my handwritten derivation of the 2D stencil, the Kronecker-sum construction, and the separable analytic spectra.
 
 To run it:
 
@@ -86,4 +108,4 @@ pytest
 
 ## Scope
 
-Like the 1D project, this uses a low-to-mid-order finite-difference scheme, sparse diagonalization with shift-invert (`eigsh` targets eigenvalues near a safe lower bound on the spectrum instead of running plain Lanczos on the whole thing, which matters more here than in 1D since $N_{tot}$ grows as $N^2$ instead of $N$), and the same $O(1/N)$ boundary ceiling. It's not a production package, it's the tool I built to actually understand how the 1D approach extends to two dimensions, and to find out which parts of that extension are trivial and which parts aren't just by checking, not by assuming.
+Like the 1D project, this uses a low-to-mid-order finite-difference scheme and sparse diagonalization with shift-invert (`eigsh` targets eigenvalues near a safe lower bound on the spectrum instead of running plain Lanczos on the whole thing, which matters more here than in 1D since $N_{tot}$ grows as $N^2$ instead of $N$). Smooth potentials now converge at the stencil's design order; potentials with a jump in $V$ are still capped near first order by pointwise sampling of the step. It's not a production package, it's the tool I built to actually understand how the 1D approach extends to two dimensions, and to find out which parts of that extension are trivial and which parts aren't just by checking, not by assuming.
