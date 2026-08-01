@@ -43,8 +43,10 @@ def d2dx2_matrix(N, dx):
         reduces to d4psi/dx4 = (4m/hbar^2) V'(x_0) psi'(x_0) there - the first even
         derivative that need not vanish. Otherwise a local O(dx^2) error survives in
         those rows.
-      - potentials with an interior jump (V_FiniteSquareWell_2D_NonSeparable and friends)
-        are still limited to ~O(dx) by pointwise sampling of the step onto the mesh.
+      - potentials with an interior jump are limited to ~O(dx) if V is sampled pointwise.
+        The *_CellAveraged variants remove that term and reach O(dx^2); second order is
+        then the ceiling, since psi is only C^1 at the jump and no sampling scheme can
+        supply derivatives the solution does not have.
     '''
 
     if N < 5:
@@ -232,6 +234,70 @@ def V_FiniteSquareWell_1D_Profile(u, L=4.0, V0=40.0):
     return np.where(np.abs(u) <= 0.5 * L, 0.0, V0)
 
 
+def _fraction_inside_1d(u, L, du):
+    '''
+    Fraction of each cell [u - du/2, u + du/2] that lies inside the interval [-L/2, L/2].
+
+    This is the whole content of cell averaging for a step: the cell straddling a wall
+    gets a fractional value that encodes where inside that cell the wall actually sits,
+    which is exactly the information pointwise sampling discards.
+    '''
+    lo = np.maximum(u - 0.5 * du, -0.5 * L)
+    hi = np.minimum(u + 0.5 * du, 0.5 * L)
+    return np.maximum(0.0, hi - lo) / du
+
+
+def V_FiniteSquareWell_2D_NonSeparable_CellAveraged(X, Y, Lx=4.0, Ly=4.0, V0=50.0):
+    '''
+    Cell-averaged version of the rectangular finite well. Still non-separable, still not
+    an analytic benchmark - this only improves how the step is sampled, it does not change
+    the physics.
+
+    In 2D the cell is a rectangle, and since the well is a product region the area inside
+    factorizes: fraction_inside(x) * fraction_inside(y). So
+
+        V_ij = V0 * (1 - f_x(x_i) * f_y(y_j))
+
+    Reads dx, dy off the mesh, so it must be called with the full meshgrid.
+    '''
+    X = np.asarray(X, dtype=float)
+    Y = np.asarray(Y, dtype=float)
+    if X.shape[1] < 2 or Y.shape[0] < 2:
+        raise ValueError('Cell averaging needs the full mesh to infer dx and dy.')
+    dx = X[0, 1] - X[0, 0]
+    dy = Y[1, 0] - Y[0, 0]
+    return V0 * (1.0 - _fraction_inside_1d(X, Lx, dx) * _fraction_inside_1d(Y, Ly, dy))
+
+
+def V_FiniteSquareWell_2D_Separable_CellAveraged(X, Y, Lx=4.0, Ly=4.0, V0=40.0):
+    '''
+    Cell-averaged version of the separable finite well, V(x,y) = Vx(x) + Vy(y).
+
+    Like V_DeltaDiscrete_2D, this potential is not smooth and so is put on the mesh by
+    cell average rather than by evaluating it at the mesh points. The difference is that
+    for a delta the cell average is forced - it cannot be evaluated pointwise at all -
+    while a step evaluates to a finite, plausible-looking number and therefore hides its
+    own sampling error until it is measured.
+
+    Because the potential is a sum, its cell average is the sum of the 1D cell averages,
+    so this stays exactly separable and can still be compared against
+    E_{nx,ny} = eps_nx + eps_ny.
+
+    Measured on the 1D profile this sampling lifts the convergence order from p ~ 1 to
+    p ~ 2. In 2D the same improvement applies, but the reachable resolution is much
+    coarser at equal cost, so expect the benchmark to land near 1e-3 rather than 1e-2 -
+    better, still not a tight test. See the README.
+    '''
+    X = np.asarray(X, dtype=float)
+    Y = np.asarray(Y, dtype=float)
+    if X.shape[1] < 2 or Y.shape[0] < 2:
+        raise ValueError('Cell averaging needs the full mesh to infer dx and dy.')
+    dx = X[0, 1] - X[0, 0]
+    dy = Y[1, 0] - Y[0, 0]
+    return (V0 * (1.0 - _fraction_inside_1d(X, Lx, dx))
+            + V0 * (1.0 - _fraction_inside_1d(Y, Ly, dy)))
+
+
 def V_FiniteSquareWell_2D_Separable(X, Y, Lx=4.0, Ly=4.0, V0=40.0):
     '''
     Separable finite well by construction: V(x,y) = Vx(x) + Vy(y), each factor a 1D finite
@@ -266,9 +332,18 @@ def V_DeltaDiscrete_2D(X, Y, alpha=8.0, x0=0.0, y0=0.0):
     Attractive discrete 2D delta well:
         V(x,y) = -alpha * delta(x-x0) * delta(y-y0), alpha > 0
 
-    Discrete implementation on the mesh:
-        V[j0, i0] = -alpha / (dx * dy)
-    at the grid point nearest (x0, y0), and zero elsewhere.
+    Like the cell-averaged finite wells above, this potential is not smooth and so is put
+    on the mesh by cell average rather than by evaluating it at the mesh points:
+
+        V_ij = (1/(dx*dy)) * integral of V over that point's cell
+
+    For a delta the integral picks out whichever cell contains (x0, y0) and gives
+    -alpha/(dx*dy) there, zero everywhere else. That is the implementation below: the cell
+    containing the point is the one whose center is nearest to it.
+
+    As in 1D, the cell average is not optional here - a delta cannot be evaluated
+    pointwise at all - whereas for a step potential pointwise evaluation returns a
+    finite, plausible-looking number and hides its own error.
 
     Unlike the 1D delta well, this one does NOT converge to a fixed ground-state energy
     as the grid is refined. I checked this directly (see validate_2d.py and the README):
@@ -525,7 +600,11 @@ x, y, eigvals, eigvecs = Schrodinger_solver_2D(
 )
 
 --------------------------- 4) Finite Square Well (Non-Separable) -------------------------
-# Rectangular well: V=0 inside, V=V0 outside.
+# Rectangular well: V=0 inside the rectangle, V=V0 everywhere outside, including the
+# corners. That is the physical well, but it is NOT separable - see recipe 5 - so its
+# spectrum does not factorize and must not be compared against eps_nx + eps_ny.
+
+# 4a) pointwise sampling of the step (not recommended for anything quantitative)
 x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     V_pot=partial(V_FiniteSquareWell_2D_NonSeparable, Lx=4.0, Ly=4.0, V0=40.0, centered=True),
     x_min=-8.0, x_max=8.0,
@@ -534,10 +613,34 @@ x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     num_eigvals=8
 )
 
+# 4b) same well, cell-averaged sampling of the step (recommended for anything quantitative)
+x, y, eigvals, eigvecs = Schrodinger_solver_2D(
+    V_pot=partial(V_FiniteSquareWell_2D_NonSeparable_CellAveraged, Lx=4.0, Ly=4.0, V0=40.0),
+    x_min=-8.0, x_max=8.0,
+    y_min=-8.0, y_max=8.0,
+    Nx=180, Ny=180,
+    num_eigvals=8
+)
+
 --------------------------- 5) Finite Square Well (Separable) -------------------------
-# Rectangular well: V=0 inside, V=V0 outside.
+# V(x,y) = Vx(x) + Vy(y), each factor a 1D finite well of depth V0. Note this is 2*V0
+# in the corners, not V0 - that is exactly the price of separability, and it is what
+# makes the spectrum factorize:  E_{nx,ny} = eps_nx(Lx,V0) + eps_ny(Ly,V0)
+# with eps_n the 1D bound states. Use this one, not recipe 4, as an analytic benchmark.
+
+# 5a) pointwise sampling of the step (not recommended for anything quantitative)
 x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     V_pot=partial(V_FiniteSquareWell_2D_Separable, Lx=4.0, Ly=4.0, V0=40.0),
+    x_min=-8.0, x_max=8.0,
+    y_min=-8.0, y_max=8.0,
+    Nx=180, Ny=180,
+    num_eigvals=8
+)
+
+# 5b) same well, cell-averaged sampling (recommended). The averaging preserves the
+# additive structure Vx(x) + Vy(y), so separability - and therefore the benchmark - survives.
+x, y, eigvals, eigvecs = Schrodinger_solver_2D(
+    V_pot=partial(V_FiniteSquareWell_2D_Separable_CellAveraged, Lx=4.0, Ly=4.0, V0=40.0),
     x_min=-8.0, x_max=8.0,
     y_min=-8.0, y_max=8.0,
     Nx=180, Ny=180,
@@ -576,8 +679,12 @@ x, y, eigvals, eigvecs = Schrodinger_solver_2D(
 )
 
 # ---------------------------- 9) Discrete Delta Well ----------------------
-# V(x,y) = -alpha*delta(x-x0)delta(y-y0)
-# Implemented as one attractive grid site with strength -alpha/(dx*dy)
+# V(x,y) = -alpha*delta(x-x0)delta(y-y0). Like the finite wells in recipes 4b and 5b
+# this potential is not smooth, so it goes on the mesh by cell average: the cell
+# integral of a delta is -alpha/(dx*dy) in whichever cell contains (x0,y0) and zero
+# elsewhere. The difference is that here the cell average is forced - a delta has no
+# pointwise value to sample - while a step does, which is why the step's sampling
+# error is the one that hides.
 x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     V_pot=partial(V_DeltaDiscrete_2D, alpha=2.0, x0=0.0, y0=0.0),
     x_min=-10.0, x_max=10.0,
@@ -585,6 +692,9 @@ x, y, eigvals, eigvecs = Schrodinger_solver_2D(
     Nx=220, Ny=220,
     num_eigvals=6
 )
+# WARNING: unlike the 1D delta, this has no continuum limit. E0 grows without bound as
+# the grid is refined (E0 * dx^2 is constant), because the 2D delta needs an explicit
+# regularization and dx is playing that role. Illustration only, never absolute energies.
 
 --------------------------- 10) Quartic Double Well -------------------------
 # V(x,y) = Vx*(x^2-a^2)^2 + Vy*y^2

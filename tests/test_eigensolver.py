@@ -24,11 +24,13 @@ from Eigensolver_2Dimensions import Schrodinger_solver_2D, V_HarmonicOscillator_
 from Eigensolver_2Dimensions import (
     V_FiniteSquareWell_2D_NonSeparable,
     V_FiniteSquareWell_2D_Separable,
+    V_FiniteSquareWell_2D_Separable_CellAveraged,
 )
 from validate_2d import (
     validate_infinite_square_well_2d,
     validate_harmonic_oscillator_2d,
     validate_finite_square_well_2d_separable,
+    validate_finite_square_well_2d_cellaveraged,
     convergence_study_isw_2d,
     delta_well_2d_divergence_study,
 )
@@ -59,6 +61,30 @@ def test_separable_finite_well_2d_matches_sum_of_1d_levels():
     # Loose threshold on purpose; this pins the structure of the spectrum, not precision.
     _, _, _, err = validate_finite_square_well_2d_separable(N=160)
     assert np.all(err < 5e-2)
+
+
+def test_cell_averaged_finite_well_2d_beats_pointwise():
+    # Same well, same solver, only the sampling of V changes. Measured ~1.9e-2 pointwise
+    # against ~5.0e-3 cell-averaged at N=160. The gain is a factor of 3 to 4 rather than
+    # the factor of 50 the 1D version gets, because dx=0.1 here against dx=0.008 there.
+    _, _, _, err_point = validate_finite_square_well_2d_separable(N=160)
+    _, _, _, err_cell = validate_finite_square_well_2d_cellaveraged(N=160)
+    assert np.all(err_cell < err_point)
+    assert np.all(err_cell < 1e-2)
+
+
+def test_cell_averaged_2d_well_stays_separable():
+    # The averaging must not break separability, otherwise the analytic comparison above
+    # would be meaningless. Since V = Vx(x) + Vy(y) is a sum, its cell average is the sum
+    # of the 1D cell averages, so the property survives exactly. Check it numerically:
+    # the mesh value must equal f(x) + g(y) for some f, g, which is equivalent to every
+    # 2x2 minor of the "additive" table vanishing.
+    x = np.linspace(-8.0, 8.0, 40)
+    y = np.linspace(-8.0, 8.0, 40)
+    X, Y = np.meshgrid(x, y, indexing='xy')
+    V = V_FiniteSquareWell_2D_Separable_CellAveraged(X, Y, Lx=4.0, Ly=5.0, V0=40.0)
+    residual = V - V[0:1, :] - V[:, 0:1] + V[0, 0]
+    assert np.max(np.abs(residual)) < 1e-12
 
 
 def test_infinite_square_well_2d_matches_analytic():

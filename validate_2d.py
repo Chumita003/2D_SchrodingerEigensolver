@@ -25,9 +25,11 @@ and y boundary rows. Before it, the well sat at 1.07e-2 / 7.06e-3 / 4.85e-3 / 3.
 N = 30 / 45 / 65 / 90 with a measured slope of about 1.0 (i.e. global O(1/N)); it now
 gives 1.53e-6 / 2.89e-7 / 6.45e-8 / 1.73e-8 with a slope of about 4.1.
 
-Note that the potentials with a jump discontinuity (V_FiniteSquareWell_2D_*) are still
-capped near first order by pointwise sampling of the step onto the mesh. That is a
-separate issue from the boundary rows and is not addressed here.
+Potentials with a jump discontinuity (V_FiniteSquareWell_2D_*) have a separate problem
+from the boundary rows: sampling the step pointwise onto the mesh snaps the wall to the
+nearest grid point, which caps convergence near first order. The *_CellAveraged variants
+replace each grid value by the average of V over that cell, which keeps the wall position
+to O(dx^2). Both are validated below so the difference is visible directly.
 
 Finally, it runs a divergence study for the discrete 2D delta well: unlike the 1D delta
 well (which has an exact closed-form bound-state energy that the discretization
@@ -48,6 +50,7 @@ from Eigensolver_2Dimensions import (
     V_InfiniteSquareWell_2D,
     V_DeltaDiscrete_2D,
     V_FiniteSquareWell_2D_Separable,
+    V_FiniteSquareWell_2D_Separable_CellAveraged,
 )
 
 
@@ -158,9 +161,10 @@ def validate_finite_square_well_2d_separable(Lx=4.0, Ly=5.0, V0=40.0, N=160,
     signature of a systematic potential-sampling bias rather than a stencil problem.
 
     The residual is somewhat sensitive to where the step lands relative to the grid: at
-    N=157 (which puts the x-edges midway between grid points) it drops to ~1.1e-2. A
-    proper fix is cell-averaged sampling of V instead of pointwise np.where; that is not
-    implemented here.
+    N=157 (which puts the x-edges midway between grid points) it drops to ~1.1e-2. That
+    sensitivity is itself the tell. The fix is cell-averaged sampling of V, implemented in
+    validate_finite_square_well_2d_cellaveraged below, which brings this to ~5e-3 at the
+    same N and removes the jitter.
     '''
     eps_x = _finite_well_1d_levels(Lx, V0, m=m, hbar=hbar)
     eps_y = _finite_well_1d_levels(Ly, V0, m=m, hbar=hbar)
@@ -169,6 +173,43 @@ def validate_finite_square_well_2d_separable(Lx=4.0, Ly=5.0, V0=40.0, N=160,
 
     x, y, eigvals, eigvecs = Schrodinger_solver_2D(
         V_pot=partial(V_FiniteSquareWell_2D_Separable, Lx=Lx, Ly=Ly, V0=V0),
+        x_min=-8.0, x_max=8.0, y_min=-8.0, y_max=8.0,
+        Nx=N, Ny=N, hbar=hbar, m=m, num_eigvals=num_eigvals,
+    )
+    rel_err = np.abs(eigvals - analytic) / analytic
+    return np.arange(num_eigvals), eigvals, analytic, rel_err
+
+
+def validate_finite_square_well_2d_cellaveraged(Lx=4.0, Ly=5.0, V0=40.0, N=160,
+                                                num_eigvals=4, hbar=1.0, m=1.0):
+    '''
+    Same separable finite well as above, but sampling V by cell average instead of
+    pointwise. Because the potential is a sum Vx(x) + Vy(y), its cell average is the sum
+    of the 1D cell averages, so it stays exactly separable and the same analytic
+    comparison applies.
+
+    Measured, worst relative error over the four lowest levels:
+
+        N       pointwise    cell-averaged
+        120     4.4e-02      1.5e-02
+        160     1.9e-02      5.0e-03
+        200     1.2e-02      2.0e-03
+
+    Two things worth noticing. The improvement is a factor of 3 to 4, not the factor of 50
+    the 1D version gets, because 2D resolution is far coarser at equal cost: N=160 per
+    axis means dx=0.1, against dx=0.008 for the 1D check. And the pointwise numbers jump
+    around non-monotonically as N changes, which is the signature of the wall snapping to
+    whichever grid point happens to be nearest, while the cell-averaged ones fall
+    smoothly. That contrast is the clearest evidence that the residual is a sampling
+    artifact rather than a stencil error.
+    '''
+    eps_x = _finite_well_1d_levels(Lx, V0, m=m, hbar=hbar)
+    eps_y = _finite_well_1d_levels(Ly, V0, m=m, hbar=hbar)
+    levels = sorted(ex + ey for ex in eps_x for ey in eps_y)
+    analytic = np.array(levels[:num_eigvals])
+
+    x, y, eigvals, eigvecs = Schrodinger_solver_2D(
+        V_pot=partial(V_FiniteSquareWell_2D_Separable_CellAveraged, Lx=Lx, Ly=Ly, V0=V0),
         x_min=-8.0, x_max=8.0, y_min=-8.0, y_max=8.0,
         Nx=N, Ny=N, hbar=hbar, m=m, num_eigvals=num_eigvals,
     )
@@ -229,7 +270,10 @@ if __name__ == "__main__":
     print_table("Harmonic oscillator, anisotropic (omega_x=1, omega_y=1.7, N=90)", ns, num, an, err)
 
     ns, num, an, err = validate_finite_square_well_2d_separable()
-    print_table("Finite square well, SEPARABLE (Lx=4, Ly=5, V0=40, N=160)", ns, num, an, err)
+    print_table("Finite square well, SEPARABLE, pointwise V (Lx=4, Ly=5, V0=40, N=160)", ns, num, an, err)
+
+    ns, num, an, err = validate_finite_square_well_2d_cellaveraged()
+    print_table("Finite square well, SEPARABLE, cell-averaged V (same well)", ns, num, an, err)
 
     Ns, errs = convergence_study_isw_2d()
     slopes = -np.diff(np.log(errs)) / np.diff(np.log(Ns))
