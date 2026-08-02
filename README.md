@@ -1,6 +1,26 @@
 # Eigensolver 2D
 
 [![tests](https://github.com/Chumita003/2D_SchrodingerEigensolver/actions/workflows/tests.yml/badge.svg)](https://github.com/Chumita003/2D_SchrodingerEigensolver/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**A finite-difference eigensolver for the 2D time-independent Schrodinger equation, extending my [1D solver](https://github.com/Chumita003/1D_SchrodingerEigensolver) and re-verified from scratch rather than assumed to inherit its behaviour.** The 2D Laplacian is assembled as a Kronecker sum of the same 4th-order 1D stencil along each axis, and the sparse Hamiltonian is diagonalized with shift-invert `eigsh`. Ten potentials, 41 regression tests, CI on Python 3.10 and 3.12.
+
+Most of the 1D behaviour carried over exactly. Two things did not, and finding out which was which is the point of the project.
+
+**Three results:**
+
+**1. Fourth-order convergence, with a constraint that is sharper in 2D.** The rows next to each Dirichlet wall need a point outside the domain; dropping it capped the solver at $O(1/N)$ along both axes at once. The fix — closing the stencil with the odd extension $\psi_{-1}=-\psi_1$ — is the same as in 1D, but here it *has* to be diagonal-only: the Laplacian is `kron(Iy, Dxx) + kron(Dyy, Ix)`, so any asymmetry in a 1D block propagates into every block of $H$ and breaks $H=H^\dagger$ globally.
+
+$$3.5\times10^{-3} \;\longrightarrow\; 1.7\times10^{-8}, \qquad p \approx 1.0 \;\longrightarrow\; p = 4.05$$
+
+![2D infinite square well convergence](figures/convergence_isw2d.png)
+
+**2. A rectangular finite well is not a separable potential, and the obvious benchmark is wrong.** $V=0$ inside the rectangle and $V_0$ outside gives $V_0$ in the corners, where a genuine sum $V_x(x)+V_y(y)$ gives $2V_0$. They differ only on four corner regions, and that is enough: the spectrum does not factorize, so comparing it against $E_{n_x,n_y}=\epsilon_{n_x}+\epsilon_{n_y}$ is meaningless. The repo ships both potentials and a test that pins the distinction.
+
+**3. The 2D delta well has no continuum limit, and the solver is right to say so.** Refining the grid does not converge it — $E_0$ grows without bound. That is not a discretization artifact: the continuum 2D delta needs an explicit regularization to be well defined at all, and here $dx$ is playing that role. Measured $E_0\cdot dx^2 = -0.375$ at every resolution over a factor of 3 in $dx$, a clean $E_0\propto -1/dx^2$ law. There is a regression test that fires if a future change accidentally makes it *converge*.
+
+---
 
 This is the two-dimensional extension of my [1D Schrodinger eigensolver](https://github.com/Chumita003/1D_SchrodingerEigensolver): same finite-difference philosophy, now for $H = -\tfrac{\hbar^2}{2m}(\partial_x^2+\partial_y^2) + V(x,y)$. I discretize x and y on a grid, build the kinetic energy operator by reusing the exact same 5-point 1D stencil along each axis and combining them into a 2D Laplacian with a Kronecker sum, add the potential as a diagonal matrix, and diagonalize the resulting sparse Hamiltonian with `scipy.sparse.linalg.eigsh` to get the lowest energies and wavefunctions. I did not assume the 2D code inherits the 1D solver's behavior just because it reuses its stencil. I went through it from scratch and checked the things that could plausibly be different in two dimensions, some carried over exactly as expected, one turned out to be a genuinely different and more severe problem than anything in the 1D project.
 

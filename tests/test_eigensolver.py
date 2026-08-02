@@ -18,11 +18,22 @@ Run: pytest
 """
 
 import numpy as np
+import pytest
 from functools import partial
+from scipy.sparse import diags, eye, kron
 
 from Eigensolver_2Dimensions import Schrodinger_solver_2D, V_HarmonicOscillator_2D
 from Eigensolver_2Dimensions import (
+    d2dx2_matrix,
+    V_AnharmonicOscillator_2D,
+    V_InfiniteSquareWell_2D,
+    V_SoftCoulomb_2D,
+    V_DoubleWell_2D,
+    V_LinearPotential_2D,
+    V_SingleWell_2D,
+    V_DeltaDiscrete_2D,
     V_FiniteSquareWell_2D_NonSeparable,
+    V_FiniteSquareWell_2D_NonSeparable_CellAveraged,
     V_FiniteSquareWell_2D_Separable,
     V_FiniteSquareWell_2D_Separable_CellAveraged,
 )
@@ -164,3 +175,97 @@ def test_anisotropic_oscillator_node_counts_match_quantum_numbers():
         nodes_y = count_nodes(psi[:, ix0])
         assert nodes_x == nx_expected
         assert nodes_y == ny_expected
+
+
+# ---------------------------------------------------------------------------
+# Structural checks: properties the solver must satisfy for *any* potential,
+# including the ones with no closed-form spectrum to compare against.
+# ---------------------------------------------------------------------------
+
+def _rebuild_H_2d(V_fun, x_min, x_max, y_min, y_max, N, hbar=1.0, m=1.0):
+    '''
+    Reassemble the interior Hamiltonian the same way Schrodinger_solver_2D does.
+
+    This is a *consistency* check, not an independent verification: assembled wrong,
+    this helper would reproduce the same error. Independent verification is what the
+    analytic comparisons above provide. What it catches is everything that happens to
+    the eigenpairs *after* eigsh returns them, none of which ARPACK saw - and in 2D
+    that list is longer than in 1D, since the flat vector also gets reshaped into
+    (Ny_int, Nx_int) and embedded in the full mesh. A transposed reshape would pass
+    unnoticed by most other tests here, because they all use Nx == Ny.
+    '''
+    x = np.linspace(x_min, x_max, N)
+    y = np.linspace(y_min, y_max, N)
+    dx, dy = x[1] - x[0], y[1] - y[0]
+    xi, yi = x[1:-1], y[1:-1]
+
+    Lap = (kron(eye(yi.size, format='csr'), d2dx2_matrix(xi.size, dx))
+           + kron(d2dx2_matrix(yi.size, dy), eye(xi.size, format='csr')))
+    X, Y = np.meshgrid(xi, yi, indexing='xy')
+    V = np.asarray(V_fun(X, Y), dtype=float)
+
+    H = -(hbar ** 2 / (2.0 * m)) * Lap + diags(V.ravel(), 0, format='csr')
+    return H, dx * dy
+
+
+_STRUCTURAL_CASES_2D = [
+    ("harmonic", partial(V_HarmonicOscillator_2D, omega_x=1.0, omega_y=1.7), -7.0, 7.0, 60),
+    ("anharmonic", partial(V_AnharmonicOscillator_2D, a=1.0, b=0.05), -7.0, 7.0, 60),
+    ("infinite well", V_InfiniteSquareWell_2D, -5.0, 6.0, 60),
+    ("finite well, non-separable", partial(V_FiniteSquareWell_2D_NonSeparable_CellAveraged,
+                                           Lx=4.0, Ly=5.0, V0=40.0), -8.0, 8.0, 60),
+    ("finite well, separable", partial(V_FiniteSquareWell_2D_Separable_CellAveraged,
+                                       Lx=4.0, Ly=5.0, V0=40.0), -8.0, 8.0, 60),
+    ("soft Coulomb", partial(V_SoftCoulomb_2D, Z=1.0, eps=0.5), -8.0, 8.0, 60),
+    ("quartic double well", partial(V_DoubleWell_2D, a=1.5, Vx=1.0, Vy=0.3), -5.0, 5.0, 60),
+    ("linear", partial(V_LinearPotential_2D, Fx=1.0, Fy=0.3), -8.0, 8.0, 60),
+    ("quartic single well", partial(V_SingleWell_2D, ax=1.0, ay=1.3), -5.0, 5.0, 60),
+    ("discrete delta", partial(V_DeltaDiscrete_2D, alpha=2.0, x0=0.0, y0=0.0), -8.0, 8.0, 60),
+]
+
+
+@pytest.mark.parametrize("name,V_fun,lo,hi,N", _STRUCTURAL_CASES_2D)
+def test_hamiltonian_2d_is_symmetric(name, V_fun, lo, hi, N):
+    # Matters more here than in 1D. The Laplacian is a Kronecker sum, so any asymmetry
+    # in Dxx or Dyy propagates into every block of H at once. This is the guard that
+    # the diagonal-only boundary closure stays diagonal-only.
+    H, _ = _rebuild_H_2d(V_fun, lo, hi, lo, hi, N)
+    asymmetry = abs(H - H.T).max()
+    assert asymmetry == 0.0, f"{name}: H is not symmetric, max |H - H^T| = {asymmetry}"
+
+
+@pytest.mark.parametrize("name,V_fun,lo,hi,N", _STRUCTURAL_CASES_2D)
+def test_eigenpairs_2d_satisfy_the_eigenvalue_equation(name, V_fun, lo, hi, N):
+    # ||H psi - E psi|| / ||psi|| on the arrays the solver hands back, after the
+    # reshape and the embedding into the full mesh.
+    x, y, eigvals, eigvecs = Schrodinger_solver_2D(
+        V_pot=V_fun, x_min=lo, x_max=hi, y_min=lo, y_max=hi,
+        Nx=N, Ny=N, num_eigvals=4,
+    )
+    H, _ = _rebuild_H_2d(V_fun, lo, hi, lo, hi, N)
+
+    for n in range(eigvals.size):
+        psi = eigvecs[1:-1, 1:-1, n].ravel()     # strip the padded boundary, flatten
+        residual = np.linalg.norm(H @ psi - eigvals[n] * psi) / np.linalg.norm(psi)
+        scale = max(abs(eigvals[n]), 1.0)
+        assert residual / scale < 1e-8, (
+            f"{name}, n={n}: residual {residual:.3e} is too large for E={eigvals[n]:.6f}"
+        )
+
+
+@pytest.mark.parametrize("name,V_fun,lo,hi,N", _STRUCTURAL_CASES_2D)
+def test_eigenfunctions_2d_are_orthonormal(name, V_fun, lo, hi, N):
+    # <psi_m|psi_n> = delta_mn under the discrete inner product the solver normalizes
+    # with, sum(psi_m psi_n) * dx * dy. Note this is also where an unresolved degenerate
+    # subspace would show up, which is why the cases above are all anisotropic.
+    x, y, eigvals, eigvecs = Schrodinger_solver_2D(
+        V_pot=V_fun, x_min=lo, x_max=hi, y_min=lo, y_max=hi,
+        Nx=N, Ny=N, num_eigvals=4,
+    )
+    area = (x[1] - x[0]) * (y[1] - y[0])
+    flat = eigvecs.reshape(-1, eigvals.size)
+    gram = (flat.T @ flat) * area
+    assert np.allclose(gram, np.eye(eigvals.size), atol=1e-8), (
+        f"{name}: max deviation from identity = "
+        f"{np.abs(gram - np.eye(eigvals.size)).max():.3e}"
+    )
