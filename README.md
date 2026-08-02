@@ -12,7 +12,7 @@ Most of the 1D behaviour carried over exactly. Two things did not, and finding o
 
 **1. Fourth-order convergence, with a constraint that is sharper in 2D.** The rows next to each Dirichlet wall need a point outside the domain; dropping it capped the solver at $O(1/N)$ along both axes at once. The fix — closing the stencil with the odd extension $\psi_{-1}=-\psi_1$ — is the same as in 1D, but here it *has* to be diagonal-only: the Laplacian is `kron(Iy, Dxx) + kron(Dyy, Ix)`, so any asymmetry in a 1D block propagates into every block of $H$ and breaks $H=H^\dagger$ globally.
 
-$$3.5\times10^{-3} \;\longrightarrow\; 1.7\times10^{-8}, \qquad p \approx 1.0 \;\longrightarrow\; p = 4.05$$
+$$3.5\times10^{-3} \quad\longrightarrow\quad 1.7\times10^{-8}, \qquad p \approx 1.0 \quad\longrightarrow\quad p = 4.05$$
 
 ![2D infinite square well convergence](figures/convergence_isw2d.png)
 
