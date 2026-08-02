@@ -10,7 +10,9 @@ Most of the 1D behaviour carried over exactly. Two things did not, and finding o
 
 **Three results:**
 
-**1. Fourth-order convergence, with a constraint that is sharper in 2D.** The rows next to each Dirichlet wall need a point outside the domain; dropping it capped the solver at $O(1/N)$ along both axes at once. The fix — closing the stencil with the odd extension $\psi_{-1}=-\psi_1$ — is the same as in 1D, but here it *has* to be diagonal-only: the Laplacian is `kron(Iy, Dxx) + kron(Dyy, Ix)`, so any asymmetry in a 1D block propagates into every block of $H$ and breaks $H=H^\dagger$ globally.
+**1. Fourth-order convergence, with a constraint that is sharper in 2D.** The rows next to each Dirichlet wall need a point outside the domain, and dropping it capped the solver at first order along both axes at once. The fix is the same odd extension $\psi_{-1} = -\psi_1$ used in 1D.
+
+What is different here is that the fix has to touch only the diagonal. The Laplacian is a Kronecker sum of the two 1D operators, so an asymmetry introduced in a single 1D block does not stay local: it propagates into every block of $H$ at once and destroys the symmetry the whole eigensolve depends on.
 
 $$3.5\times10^{-3} \quad\longrightarrow\quad 1.7\times10^{-8}, \qquad p \approx 1.0 \quad\longrightarrow\quad p = 4.05$$
 
